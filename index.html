@@ -1,201 +1,162 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Bedrock Pattern Uploader — 5×5</title>
-  <style>
-    :root{--size:48px;--gap:6px}
-    body{font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:18px;color:#111}
-    h1{font-size:20px;margin-bottom:6px}
-    .grid{display:grid;grid-template-columns:repeat(5,var(--size));grid-auto-rows:var(--size);gap:var(--gap);margin:12px 0}
-    .cell{width:var(--size);height:var(--size);display:flex;align-items:center;justify-content:center;border:1px solid #cfcfcf;background:#f7f7f7;cursor:pointer;user-select:none}
-    .cell.on{background:#111;color:#fff}
-    .controls{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
-    button, input[type=file]{padding:8px 10px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
-    .output{margin-top:12px}
-    textarea{width:100%;height:110px;font-family:monospace;padding:8px;border:1px solid #ddd;border-radius:6px}
-    label.small{font-size:13px;color:#555}
-    .hint{font-size:13px;color:#666;margin-top:8px}
-    .row{display:flex;gap:10px;align-items:center}
-  </style>
+<meta charset="UTF-8" />
+<title>Bedrock Pattern Coordinate Tool</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 20px; }
+  table { border-collapse: collapse; }
+  td { width: 32px; height: 32px; border: 1px solid #555; cursor: pointer; text-align:center; }
+  td.on { background: #333; color:white; }
+  td.off { background: #ddd; color:#333; }
+  #container { display:flex; gap:20px; }
+</style>
 </head>
 <body>
-  <h1>Bedrock Pattern Uploader — 5×5</h1>
-  <div class="hint">Click cells to toggle bedrock (dark). Or upload an image — the app will downscale it to 5×5 and auto-detect dark pixels.</div>
+<h1>Bedrock Pattern Coordinate Tool</h1>
+<p>Click to toggle each bedrock block. Black = bedrock, gray = air.</p>
 
-  <div class="grid" id="grid"></div>
+<div id="container">
+  <table id="grid"></table>
 
-  <div class="controls">
-    <div class="row">
-      <button id="clearBtn">Clear</button>
-      <button id="invertBtn">Invert</button>
-      <button id="randomBtn">Random</button>
-    </div>
-
-    <div class="row">
-      <label class="small">Upload image (PNG/JPG):</label>
-      <input id="fileInput" type="file" accept="image/*" />
-      <label class="small">Threshold:</label>
-      <input id="threshold" type="range" min="0" max="255" value="128" />
-      <span id="thVal">128</span>
-    </div>
-
-    <div class="row">
-      <button id="exportJson">Export JSON</button>
-      <button id="exportText">Export 0/1 Text</button>
-      <button id="copyClipboard">Copy to Clipboard</button>
-      <button id="downloadFile">Download .json</button>
-    </div>
+  <div style="flex:1;">
+    <h2>Pattern Import / Export</h2>
+    <button id="exportPattern">Export Pattern JSON</button>
+    <button id="importPatternBtn">Import Pattern JSON</button>
+    <input id="importPatternFile" type="file" accept="application/json" style="display:none;" />
+    <textarea id="patternBox" style="width:100%;height:120px;margin-top:10px;font-family:monospace;"></textarea>
   </div>
+</div>
 
-  <div class="output">
-    <label class="small">Output preview:</label>
-    <textarea id="output" readonly></textarea>
-  </div>
+<hr>
+<h2>Seed Input (Optional)</h2>
+<p>Enter a world seed. This will be embedded into the coordinate output JSON.</p>
+<input id="seedInput" type="text" style="width:260px;font-size:15px;padding:4px;" placeholder="Enter seed (number or text)" />
 
-  <canvas id="scratch" width="5" height="5" style="display:none"></canvas>
+<hr>
+<h2>Coordinate Output</h2>
+<p>Deterministic pseudo-coordinates computed locally from the 5×5 pattern.</p>
+<button id="calcCoords">Compute Coordinates</button>
+<button id="downloadCoords">Download Coords JSON</button>
+<textarea id="coordOutput" style="width:100%;height:150px;margin-top:12px;font-family:monospace;"></textarea>
 
-  <script>
-    // Build grid
-    const gridEl = document.getElementById('grid');
-    const cells = [];
-    for(let y=0;y<5;y++){
-      for(let x=0;x<5;x++){
-        const el = document.createElement('div');
-        el.className = 'cell';
-        el.dataset.x = x; el.dataset.y = y;
-        el.addEventListener('click', ()=>{ el.classList.toggle('on'); updateOutput(); });
-        gridEl.appendChild(el);
-        cells.push(el);
+<script>
+  // Build 5×5 grid
+  const grid = document.getElementById('grid');
+  const size = 5;
+
+  for(let r=0; r<size; r++){
+    const row = document.createElement('tr');
+    for(let c=0; c<size; c++){
+      const cell = document.createElement('td');
+      cell.dataset.row = r;
+      cell.dataset.col = c;
+      cell.classList.add('off');
+      cell.onclick = () => {
+        cell.classList.toggle('on');
+        cell.classList.toggle('off');
+      };
+      row.appendChild(cell);
+    }
+    grid.appendChild(row);
+  }
+
+  function getPattern(){
+    const pattern = [];
+    for(let r=0; r<size; r++){
+      const row = [];
+      for(let c=0; c<size; c++){
+        const cell = grid.rows[r].cells[c];
+        row.push(cell.classList.contains('on') ? 1 : 0);
       }
+      pattern.push(row);
     }
+    return pattern;
+  }
 
-    const outputEl = document.getElementById('output');
-    const thresholdEl = document.getElementById('threshold');
-    const thVal = document.getElementById('thVal');
-    thresholdEl.addEventListener('input', ()=>{ thVal.textContent = thresholdEl.value });
-
-    function getPattern(){
-      // returns 2D array [row][col] where 1 = bedrock(dark)
-      const out = [];
-      for(let y=0;y<5;y++){
-        const row = [];
-        for(let x=0;x<5;x++){
-          const el = cells[y*5 + x];
-          row.push(el.classList.contains('on')?1:0);
-        }
-        out.push(row);
-      }
-      return out;
-    }
-
-    function updateOutput(){
-      const pattern = getPattern();
-      outputEl.value = JSON.stringify({format:'5x5-binary',pattern:pattern}, null, 2);
-    }
-
-    document.getElementById('clearBtn').addEventListener('click', ()=>{ cells.forEach(c=>c.classList.remove('on')); updateOutput(); });
-    document.getElementById('invertBtn').addEventListener('click', ()=>{ cells.forEach(c=>c.classList.toggle('on')); updateOutput(); });
-    document.getElementById('randomBtn').addEventListener('click', ()=>{ cells.forEach(c=>Math.random()>0.6?c.classList.add('on'):c.classList.remove('on')); updateOutput(); });
-
-    // File upload & auto-detect
-    const fileInput = document.getElementById('fileInput');
-    const canvas = document.getElementById('scratch');
-    const ctx = canvas.getContext('2d');
-
-    fileInput.addEventListener('change', async (e)=>{
-      const f = e.target.files[0];
-      if(!f) return;
-      const img = await loadImageFromFile(f);
-      // draw to 5x5 canvas
-      ctx.clearRect(0,0,5,5);
-      // maintain aspect ratio, draw scaled to fit 5x5
-      ctx.drawImage(img, 0, 0, 5, 5);
-      const imgData = ctx.getImageData(0,0,5,5).data;
-      const th = parseInt(thresholdEl.value,10);
-      for(let y=0;y<5;y++){
-        for(let x=0;x<5;x++){
-          const i = (y*5 + x)*4;
-          const r = imgData[i], g = imgData[i+1], b = imgData[i+2];
-          // luminance
-          const lum = 0.2126*r + 0.7152*g + 0.0722*b;
-          const isDark = lum < th;
-          const el = cells[y*5 + x];
-          if(isDark) el.classList.add('on'); else el.classList.remove('on');
+  function loadPattern(pat){
+    for(let r=0; r<size; r++){
+      for(let c=0; c<size; c++){
+        const cell = grid.rows[r].cells[c];
+        if (pat[r][c] === 1){
+          cell.classList.add('on');
+          cell.classList.remove('off');
+        } else {
+          cell.classList.add('off');
+          cell.classList.remove('on');
         }
       }
-      updateOutput();
-    });
-
-    function loadImageFromFile(file){
-      return new Promise((resolve,reject)=>{
-        const url = URL.createObjectURL(file);
-        const img = new Image();
-        img.onload = ()=>{ URL.revokeObjectURL(url); resolve(img); };
-        img.onerror = reject;
-        img.src = url;
-      });
     }
+  }
 
-    // Export/Copy/Download
-    document.getElementById('exportJson').addEventListener('click', ()=>{ outputEl.value = JSON.stringify({format:'5x5-binary',pattern:getPattern()}, null, 2); });
-    document.getElementById('exportText').addEventListener('click', ()=>{ outputEl.value = getPattern().map(r => r.join('')).join('\n'); });
-    document.getElementById('copyClipboard').addEventListener('click', async ()=>{ try{ await navigator.clipboard.writeText(outputEl.value); alert('Copied to clipboard'); }catch(err){ alert('Clipboard failed: '+err); } });
-    document.getElementById('downloadFile').addEventListener('click', ()=>{
-      const blob = new Blob([outputEl.value], {type:'application/json'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = 'bedrock-pattern-5x5.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-    });
+  // Export Pattern
+  document.getElementById('exportPattern').onclick = () => {
+    const pat = getPattern();
+    document.getElementById('patternBox').value = JSON.stringify(pat, null, 2);
+  };
 
-    // initial
-    updateOutput();
-  </script>
-  <div style="margin-top:20px;padding:12px;border:1px solid #ccc;border-radius:8px;">
-    <h2 style="font-size:18px;margin-bottom:6px;">Coordinate Output</h2>
-    <p style="font-size:14px;color:#444;margin:6px 0;">Compute deterministic pseudo‑coordinates from the current 5×5 pattern. These coords are generated locally and exported as JSON.</p>
+  // Import Pattern
+  document.getElementById('importPatternBtn').onclick = () => {
+    document.getElementById('importPatternFile').click();
+  };
 
-    <button id="calcCoords" style="padding:8px 12px;margin-top:8px;">Compute Coordinates</button>
-    <button id="downloadCoords" style="padding:8px 12px;margin-top:8px;">Download Coords JSON</button>
+  document.getElementById('importPatternFile').onchange = async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const text = await file.text();
+    try {
+      const pat = JSON.parse(text);
+      loadPattern(pat);
+      document.getElementById('patternBox').value = JSON.stringify(pat, null, 2);
+    } catch(err){ console.error(err); }
+  };
 
-    <textarea id="coordOutput" style="width:100%;height:120px;margin-top:12px;font-family:monospace;"></textarea>
-  </div>
-
-  <script>
-    function patternToCoords(pattern){
-      // Produce deterministic pseudo-coordinates from 25 bits
-      let flat = pattern.flat().join('');
-      let num = 0;
-      for(let i=0;i<flat.length;i++){
-        num = (num * 31 + (flat[i] === '1' ? 7 : 3)) >>> 0;
-      }
-      const x = (num % 20000000) - 10000000;
-      const z = ((num / 17 >>> 0) % 20000000) - 10000000;
-      return { x, z, hash: num };
+  // Deterministic coordinate generator
+  function patternToCoords(pattern){
+    let flat = pattern.flat().join('');
+    let num = 0;
+    for(let i=0; i<flat.length; i++){
+      num = (num * 31 + (flat[i] === '1' ? 7 : 3)) >>> 0;
     }
+    const x = (num % 20000000) - 10000000;
+    const z = ((num / 17 >>> 0) % 20000000) - 10000000;
+    return { x, z, hash: num };
+  }
 
-    const coordOut = document.getElementById('coordOutput');
+  const coordOut = document.getElementById('coordOutput');
 
-    document.getElementById('calcCoords').onclick = ()=>{
-      const pat = getPattern();
-      const coords = patternToCoords(pat);
-      coordOut.value = JSON.stringify({ coords, pattern: pat }, null, 2);
-    };
+  // Compute Coordinates
+  document.getElementById('calcCoords').onclick = () => {
+    const pat = getPattern();
+    const coords = patternToCoords(pat);
+    const seed = document.getElementById('seedInput').value || null;
 
-    document.getElementById('downloadCoords').onclick = ()=>{
-      const pat = getPattern();
-      const coords = patternToCoords(pat);
-      const blob = new Blob([JSON.stringify({ coords, pattern: pat }, null, 2)], {type:'application/json'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'coords-from-pattern.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    };
-  </script>
+    coordOut.value = JSON.stringify({
+      seed: seed,
+      coords: coords,
+      pattern: pat
+    }, null, 2);
+  };
+
+  // Download Coordinates JSON
+  document.getElementById('downloadCoords').onclick = () => {
+    const pat = getPattern();
+    const coords = patternToCoords(pat);
+    const seed = document.getElementById('seedInput').value || null;
+
+    const obj = { seed: seed, coords: coords, pattern: pat };
+
+    const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'coords-with-seed.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+</script>
 
 </body>
 </html>
