@@ -151,5 +151,51 @@
     // initial
     updateOutput();
   </script>
+  <div style="margin-top:20px;padding:12px;border:1px solid #ccc;border-radius:8px;">
+    <h2 style="font-size:18px;margin-bottom:6px;">Coordinate Output</h2>
+    <p style="font-size:14px;color:#444;margin:6px 0;">Compute deterministic pseudo‑coordinates from the current 5×5 pattern. These coords are generated locally and exported as JSON.</p>
+
+    <button id="calcCoords" style="padding:8px 12px;margin-top:8px;">Compute Coordinates</button>
+    <button id="downloadCoords" style="padding:8px 12px;margin-top:8px;">Download Coords JSON</button>
+
+    <textarea id="coordOutput" style="width:100%;height:120px;margin-top:12px;font-family:monospace;"></textarea>
+  </div>
+
+  <script>
+    function patternToCoords(pattern){
+      // Produce deterministic pseudo-coordinates from 25 bits
+      let flat = pattern.flat().join('');
+      let num = 0;
+      for(let i=0;i<flat.length;i++){
+        num = (num * 31 + (flat[i] === '1' ? 7 : 3)) >>> 0;
+      }
+      const x = (num % 20000000) - 10000000;
+      const z = ((num / 17 >>> 0) % 20000000) - 10000000;
+      return { x, z, hash: num };
+    }
+
+    const coordOut = document.getElementById('coordOutput');
+
+    document.getElementById('calcCoords').onclick = ()=>{
+      const pat = getPattern();
+      const coords = patternToCoords(pat);
+      coordOut.value = JSON.stringify({ coords, pattern: pat }, null, 2);
+    };
+
+    document.getElementById('downloadCoords').onclick = ()=>{
+      const pat = getPattern();
+      const coords = patternToCoords(pat);
+      const blob = new Blob([JSON.stringify({ coords, pattern: pat }, null, 2)], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'coords-from-pattern.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    };
+  </script>
+
 </body>
 </html>
