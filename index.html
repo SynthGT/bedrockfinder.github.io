@@ -1,0 +1,227 @@
+/*
+Bedrock Pattern Finder (heuristic)
+Single-file Node.js app (Express) that accepts a 5x5 bedrock pattern and a seed,
+then scans a configurable X/Z search area and returns candidate coordinates where
+an internally-generated (heuristic) bedrock pattern matches the uploaded 5x5.
+
+Important notes (read before running):
+- This tool is a heuristic/approximation. It does NOT replicate official Bedrock
+  edition bedrock generation. It uses a deterministic pseudo-random generator
+  (Java LCG-style) and a simple rule to simulate "bedrock presence". Results
+  are only as useful as that approximation. Use at your own discretion.
+- You MUST provide a seed. The app will not brute-force unknown seeds.
+
+How to run:
+1) Install Node.js (v16+ recommended).
+2) Save this file as `app.js`.
+3) Run:
+   npm init -y
+   npm install express ejs body-parser
+   node app.js
+4) Open http://localhost:3000 in your browser.
+
+Usage:
+- Enter the world seed (integer or string). If string, it will be hashed.
+- Fill the 5x5 pattern checkboxes: check = bedrock present, unchecked = air.
+- Set scan range (minX/maxX, minZ/maxZ) in chunk increments (each unit = 1 block by default).
+- Submit. The server scans and reports matching coordinates (X,Z) where the
+  generated 5x5 block pattern equals your input.
+
+This is a starting point — you can replace the `generate5x5FromSeed` function
+with a more accurate bedrock generator if you have one.
+*/
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const app = express();
+const PORT = 3000;
+
+app.set('view engine', 'ejs');
+app.use(express.static('public'));
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Hash a string seed into a 64-bit BigInt-like value
+function hashSeedToBigInt(seedStr) {
+  // FNV-1a 64-bit-ish
+  let h = BigInt('0xcbf29ce484222325');
+  for (let i = 0; i < seedStr.length; i++) {
+    h ^= BigInt(seedStr.charCodeAt(i));
+    h = (h * BigInt(0x100000001b3)) & ((BigInt(1) << BigInt(64)) - BigInt(1));
+  }
+  return h;
+}
+
+// Java-like LCG (48-bit) using BigInt
+function makeLCG(seed48) {
+  let mask = (BigInt(1) << BigInt(48)) - BigInt(1);
+  let state = (seed48 ^ BigInt(0x5DEECE66D)) & mask; // similar scramble
+  return {
+    nextInt(bound) {
+      // next(31)
+      state = (state * BigInt(25214903917) + BigInt(11)) & mask;
+      let val = Number((state >> BigInt(17)) & BigInt(0x7fffffff));
+      if (typeof bound === 'undefined') return val;
+      return Math.floor(val / 2147483648 * bound);
+    }
+  }
+}
+
+// Heuristic generator: produce a deterministic 5x5 boolean grid from seed + x + z
+function generate5x5FromSeed(seedVal, x, z) {
+  // combine seedVal, x and z into a 48-bit seed input
+  let combined = (seedVal ^ (BigInt(x) * BigInt(341873128712n)) ^ (BigInt(z) * BigInt(132897987541n))) & ((BigInt(1) << BigInt(48)) - BigInt(1));
+  let rng = makeLCG(combined);
+
+  // produce 5x5 array row-major [0..4][0..4]
+  let grid = [];
+  for (let ry = 0; ry < 5; ry++) {
+    let row = [];
+    for (let rx = 0; rx < 5; rx++) {
+      // Heuristic: bedrock present if nextInt(10) === 0 (roughly 10% chance)
+      // This is arbitrary; adjust the threshold if you want denser/sparser bedrock.
+      let v = rng.nextInt(10);
+      row.push(v === 0);
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+function patternEquals(a, b) {
+  for (let y = 0; y < 5; y++) for (let x = 0; x < 5; x++) if (a[y][x] !== b[y][x]) return false;
+  return true;
+}
+
+app.get('/', (req, res) => {
+  res.render('index', { matches: null, form: null, error: null });
+});
+
+app.post('/scan', (req, res) => {
+  try {
+    let seedInput = req.body.seed || '';
+    if (seedInput.length === 0) throw new Error('Seed required');
+
+    // convert seed to BigInt
+    let seedVal;
+    if (/^-?\d+$/.test(seedInput)) {
+      // numeric
+      seedVal = BigInt(seedInput) & ((BigInt(1) << BigInt(48)) - BigInt(1));
+    } else {
+      seedVal = hashSeedToBigInt(seedInput) & ((BigInt(1) << BigInt(48)) - BigInt(1));
+    }
+
+    // read 5x5 pattern from form (checkboxes named p_r_c where r,c 0..4)
+    let pattern = [];
+    for (let r = 0; r < 5; r++) {
+      let row = [];
+      for (let c = 0; c < 5; c++) {
+        let key = `p_${r}_${c}`;
+        row.push(req.body[key] === 'on');
+      }
+      pattern.push(row);
+    }
+
+    // scan bounds
+    let minX = parseInt(req.body.minX || '-100');
+    let maxX = parseInt(req.body.maxX || '100');
+    let minZ = parseInt(req.body.minZ || '-100');
+    let maxZ = parseInt(req.body.maxZ || '100');
+
+    // limit maximum search area to avoid runaway CPU
+    let maxCells = 1000 * 1000; // 1e6
+    let cells = (maxX - minX + 1) * (maxZ - minZ + 1);
+    if (cells > maxCells) {
+      return res.render('index', { matches: null, form: req.body, error: `Search area too big (${cells} cells). Reduce range.` });
+    }
+
+    let matches = [];
+    for (let X = minX; X <= maxX; X++) {
+      for (let Z = minZ; Z <= maxZ; Z++) {
+        let got = generate5x5FromSeed(seedVal, X, Z);
+        if (patternEquals(got, pattern)) matches.push({ x: X, z: Z });
+      }
+    }
+
+    res.render('index', { matches, form: req.body, error: null });
+  } catch (e) {
+    res.render('index', { matches: null, form: req.body, error: e.message || String(e) });
+  }
+});
+
+// EJS template in-memory: we'll create a small views folder when starting if missing.
+const fs = require('fs');
+const path = require('path');
+const viewsDir = path.join(__dirname, 'views');
+if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir);
+const indexEjsPath = path.join(viewsDir, 'index.ejs');
+if (!fs.existsSync(indexEjsPath)) {
+  fs.writeFileSync(indexEjsPath, `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Bedrock Pattern Finder (heuristic)</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:20px}
+    .grid{display:inline-grid;grid-template-columns:repeat(5,32px);gap:4px}
+    .cell{width:32px;height:32px;border:1px solid #ccc;display:flex;align-items:center;justify-content:center}
+    .checked{background:#222;color:#fff}
+    .controls{margin-top:10px}
+    .matches{margin-top:16px}
+  </style>
+</head>
+<body>
+  <h2>Bedrock Pattern Finder (heuristic)</h2>
+  <% if (error) { %>
+    <div style="color:red"><%= error %></div>
+  <% } %>
+  <form method="post" action="/scan">
+    <label>Seed: <input name="seed" value="<%= form && form.seed ? form.seed : '' %>" required></label>
+    <div style="margin-top:8px">Enter 5x5 pattern (checked = bedrock present)</div>
+    <div class="grid" style="margin-top:8px">
+      <% for (let r=0;r<5;r++) { for (let c=0;c<5;c++) { %>
+        <label class="cell <%= form && form[`p_${r}_${c}`] ? 'checked' : '' %>">
+          <input type="checkbox" name="p_<%=r%>_<%=c%>" style="display:none" <%= form && form[`p_${r}_${c}`] ? 'checked' : '' %> />
+          <%# visual square to click - simple JS below toggles checkbox %>
+        </label>
+      <% } } %>
+    </div>
+
+    <div class="controls">
+      <label>minX: <input name="minX" value="<%= form && form.minX ? form.minX : '-16' %>"></label>
+      <label>maxX: <input name="maxX" value="<%= form && form.maxX ? form.maxX : '16' %>"></label>
+      <label>minZ: <input name="minZ" value="<%= form && form.minZ ? form.minZ : '-16' %>"></label>
+      <label>maxZ: <input name="maxZ" value="<%= form && form.maxZ ? form.maxZ : '16' %>"></label>
+    </div>
+
+    <div style="margin-top:12px">
+      <button type="submit">Scan</button>
+    </div>
+  </form>
+
+  <% if (matches) { %>
+    <div class="matches">
+      <h3>Matches (<%= matches.length %>)</h3>
+      <ul>
+        <% matches.forEach(m => { %>
+          <li>X: <%= m.x %>, Z: <%= m.z %></li>
+        <% }) %>
+      </ul>
+    </div>
+  <% } %>
+
+<script>
+// make the visual grid clickable: toggle hidden checkbox
+document.querySelectorAll('.cell').forEach((el, idx) => {
+  el.addEventListener('click', () => {
+    // find the input inside
+    let cb = el.querySelector('input[type=checkbox]');
+    cb.checked = !cb.checked;
+    el.classList.toggle('checked', cb.checked);
+  });
+});
+</script>
+</body>
+</html>`);
+}
+
+app.listen(PORT, () => console.log(`Bedrock Pattern Finder running at http://localhost:${PORT}`));
